@@ -1,0 +1,7 @@
+*~
+rid/Debug
+rid/Release
+*.opensdf
+*.sdf
+*.suo
+*.user
