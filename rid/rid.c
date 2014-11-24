@@ -47,6 +47,7 @@ struct section_header
   unsigned int raw_size;
   unsigned int raw_offset;
   unsigned int header_offset;
+  unsigned int characteristics;
 };
 
 struct data_directory
@@ -84,6 +85,13 @@ int rva_to_section_index(const struct pe_info *info,
                          unsigned int rva,
                          int *index);
 
+int rva_to_section_header(struct pe_info *info,
+                          unsigned int rva,
+                          struct section_header **header);
+
+int import_directory_section_header(struct pe_info *info,
+                                    struct section_header **header);
+
 int rva_to_offset(const struct pe_info *info,
                   unsigned int rva,
                   unsigned int *offset);
@@ -102,9 +110,15 @@ int patch_in_place(FILE *stream,
                    const char *new_name);
 
 int patch_in_cave(FILE *stream,
-                  struct pe_info *info,
+                  struct section_header *header,
                   struct import_descriptor *descriptor,
                   const char *new_name);
+
+int patch_in_cave_alt(FILE *stream,
+                      struct pe_info *info,
+                      struct section_header *header,
+                      struct import_descriptor *descriptor,
+                      const char *new_name);
 
 int rename_import_dll(const char *pe_file,
                       const char *old_name,
@@ -146,6 +160,7 @@ int rename_import_dll(const char *pe_file,
   FILE *stream;
   struct pe_info info;
   struct import_descriptor descriptors[MAX_IMPORT_DESCRIPTORS];
+  struct section_header *import_header;
   int ndescriptors;
   int descriptor_index;
   int i;
@@ -205,7 +220,12 @@ int rename_import_dll(const char *pe_file,
       CHECK_S("Can't patch in-place", patch_in_place(stream, &descriptors[descriptor_index], new_name));
       printf("Patched in-place\n\n");
     } else {
-      CHECK_S("Can't patch in cave", patch_in_cave(stream, &info, &descriptors[descriptor_index], new_name));
+      CHECK_S("Can't get section header for import directory", import_directory_section_header(&info, &import_header));
+      err = patch_in_cave(stream, import_header, &descriptors[descriptor_index], new_name);
+      if (err != OK) {
+        printf("Couldn't patch in import directory's section, trying alternative sections\n");
+        CHECK_S("Can't patch in cave", patch_in_cave_alt(stream, &info, import_header, &descriptors[descriptor_index], new_name));
+      }
       printf("Patched in cave\n\n");
     }
   }
@@ -316,7 +336,8 @@ int read_pe_info(FILE *stream, struct pe_info *info)
     U32(stream, &header->virtual_address);
     U32(stream, &header->raw_size);
     U32(stream, &header->raw_offset);
-    fseek(stream, 16, SEEK_CUR);
+    fseek(stream, 12, SEEK_CUR);
+    U32(stream, &header->characteristics);
   }
 
   return OK;
@@ -341,6 +362,25 @@ int rva_to_section_index(const struct pe_info *info,
   return ERR_BAD_RVA;
 }
 
+int rva_to_section_header(struct pe_info *info,
+                          unsigned int rva,
+                          struct section_header **header)
+{
+  int err;
+  int section_index;
+
+  CHECK(rva_to_section_index(info, rva, &section_index));
+  *header = &info->section_headers[section_index];
+
+  return OK;
+}
+
+int import_directory_section_header(struct pe_info *info,
+                                    struct section_header **header)
+{
+  return rva_to_section_header(info, info->data_directories[IMPORT_DIRECTORY].virtual_address, header);
+}
+
 int rva_to_offset(const struct pe_info *info,
                   unsigned int rva,
                   unsigned int *offset)
@@ -358,7 +398,6 @@ int rva_to_offset(const struct pe_info *info,
   *offset += header->raw_offset;
   return OK;
 }
-
 
 int read_import_descriptors(FILE *stream,
                             const struct pe_info *info,
@@ -438,22 +477,16 @@ int patch_in_place(FILE *stream,
   return OK;
 }
 
-
 int patch_in_cave(FILE *stream,
-                  struct pe_info *info,
+                  struct section_header *header,
                   struct import_descriptor *descriptor,
                   const char *new_name)
 {
   int err;
-  int section_index;
-  struct section_header *header;
   unsigned int cave_capacity;
   unsigned int cave_offset;
   unsigned int cave_rva;
   unsigned int name_size;
-
-  CHECK(rva_to_section_index(info, info->data_directories[IMPORT_DIRECTORY].virtual_address, &section_index));
-  header = &info->section_headers[section_index];
 
   if (header->raw_size <= header->virtual_size)
     return ERR_NO_CAVE;
@@ -481,4 +514,26 @@ int patch_in_cave(FILE *stream,
   header->virtual_size += name_size;
 
   return OK;
+}
+
+int patch_in_cave_alt(FILE *stream,
+                      struct pe_info *info,
+                      struct section_header *import_header,
+                      struct import_descriptor *descriptor,
+                      const char *new_name)
+{
+  int err = ERR_NO_CAVE;
+  int i;
+  struct section_header *header;
+
+  for (i = 0; i < (int)info->num_sections; i++) {
+    header = &info->section_headers[i];
+    if (header != import_header && header->characteristics == import_header->characteristics) {
+      err = patch_in_cave(stream, header, descriptor, new_name);
+      if (err == OK)
+        break;
+    }
+  }
+
+  return err;
 }
