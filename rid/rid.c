@@ -305,6 +305,8 @@ int read_pe_info(FILE *stream, struct pe_info *info)
 {
   int err;
   int i;
+  unsigned int magic;
+  int skip;
 
   CHECK(seek_pe_header(stream));
 
@@ -316,7 +318,21 @@ int read_pe_info(FILE *stream, struct pe_info *info)
     info->num_sections = MAX_SECTIONS;
   }
 
-  fseek(stream, 112, SEEK_CUR);
+  fseek(stream, 16, SEEK_CUR);
+  U16(stream, &magic);
+  switch (magic) {
+  case 0x10B:
+    skip = 94;
+    break;
+  case 0x20B:
+    skip = 110;
+    break;
+  default:
+    return ERR_BLACK_MAGIC;
+  }
+
+  fseek(stream, skip, SEEK_CUR);
+
   for (i = 0; i < NUM_DATA_DIRECTORIES; i++) {
     struct data_directory *directory = &info->data_directories[i];
 
